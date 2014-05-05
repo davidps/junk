@@ -1,0 +1,439 @@
+string szHtml = '', szDescription, szVariableName, //etc...
+long lCount, lPos, lOrgCt, lIndex, lLineNumber, //etc...
+datastore ds, ds2, dFB
+date dtSubmittedDate
+decimal dMinimum, dAmount, dSubmittedamt, dspendbalance
+boolean bDefault, bConfirmOnly = FALSE, bPrintableOnly = FALSE
+
+//redacted
+
+IF left(p_szprojectid,4) = 'DAF|' THEN
+	szDAFAmount = Right(p_szprojectid, Len(p_szprojectid) - Pos(p_szprojectid,'|'))
+	p_szprojectid = ''
+	szVariableIndexed[4] = szDAFAmount
+	szDAFYN = 'Y'
+END IF
+
+//redacted
+
+SELECT sy_grant_form_bold_required_yn, sy_grant_form_suggestion_term, sy_cant_make_suggestions_language,
+		 sy_default_iagree_on_signoffs_yn, sy_show_iagree_only_yn, COALESCE(sy_suppress_title_bar_yn,'N'),
+		 sy_use_image_headers_yn, COALESCE(sy_print_new_window_yn,'N'), gt_dynamic_grant_form
+  INTO :szBoldRequired, :szSuggestion, :szCantMakeGrantsLanguage, :szDefaultIAgree, :szShowIAgreeOnly, 
+       :szSuppressTitleBar, :szUseImageHeadersYN , :szPrintNewWindowYN , :szHtml
+  FROM fd_entity
+ WHERE fd_entity = :p_szEntity USING itr; 
+
+//redacted
+
+SELECT fd_advisor.fd_administrator_type, fd_advisor_email, fd_advisor_name
+  INTO :szAdminType, :szAdvisorEmail, :szAdvisorName
+  FROM fd_advisor
+ WHERE fd_advisor_userid = :p_szAdvisorID USING itr;
+
+IF p_szEditSuggestionID <> '' AND NOT IsNull(p_szEditSuggestionID) THEN 
+	IF POS(UPPER(p_szEditSuggestionID),'APPROVAL') > 0 THEN
+		szApprovalYN = 'Y'
+		p_szEditSuggestionID = LEFT(p_szEditSuggestionID,POS(p_szEditSuggestionID,'APPROVAL') - 1) 
+		IF szAdminType <> 'S' THEN 
+			RETURN 'You must be a system administrator for this.'
+		END IF
+		SELECT "gt_cart_hdr"."fd_entity"
+		  INTO :szEntity
+		  FROM "gt_cart_hdr"
+		 WHERE "gt_suggestion_id" = CAST(:p_szEditSuggestionID as integer) USING itr; 
+		IF szEntity <> p_szEntity THEN 
+			RETURN 'Suggestion ID is not one of your foundation! Request denied'
+		END IF 
+	ELSE
+		SELECT "gt_cart_hdr"."fd_advisor_id", "gt_submitted_date"
+		  INTO :szCheckAdvisor, :dtSubmittedDate
+		  FROM "gt_cart_hdr"
+		 WHERE "gt_suggestion_id" = CAST(:p_szEditSuggestionID as integer) USING itr;
+		IF szCheckAdvisor <> p_szAdvisorID THEN 
+			RETURN 'You request could not be processed. Please try again later. GSF'
+		END IF
+		//redacted
+	END IF 
+END IF 
+
+SELECT fd_label_fd_fund_history_hdr
+  INTO :szFundHistoryHdr
+  FROM fd_labels_fundhistory
+ WHERE Fd_entity = :p_szEntity USING itr;
+IF IsNull(szFundHistoryHdr) OR TRIM(szFundHistoryHdr) = '' THEN szFundHistoryHdr = 'Fund Summary'
+
+IF IsNull(p_dFieldCoefficient) THEN p_dFieldCoefficient = 1
+
+SELECT fd_suggestioncart_label, fd_html_before_form, fd_html_after_form, gt_grant_recommendation,
+		fd_colon_after_label_yn, fd_required_field_indicator, fd_minimum_suggestion, fd_allow_cents_yn,
+		sy_continue_button, sy_submit_button, sy_clear_button
+  INTO :szSuggestionCart, :szHTMLBeforeForm, :szHTMLAfterForm, :szGrantRecommendation, :szColonAfterLabel,
+  		:szRequiredFieldIndicator, :dMinimum, :szAllowCents, :szContinueButton, :szSubmitButton, :szClearButton 
+  FROM fd_entity_grant_settings
+ WHERE fd_entity = :p_szEntity USING itr;
+IF IsNull(szSuggestionCart) OR TRIM(szSuggestionCart) = '' THEN szSuggestionCart = 'Suggestion Cart' 
+IF IsNull(szColonAfterLabel) OR szColonAfterLabel = 'Y' THEN
+	szColonAfterLabel = ":"
+ELSE
+	szColonAfterLabel = ""
+END IF 
+IF IsNull(szRequiredFieldIndicator) THEN szRequiredFieldIndicator = '*' 
+
+IF IsNull(szBoldrequired) OR szBoldRequired = '' THEN szBoldRequired = 'N'
+IF IsNull(szSuggestion) OR szSuggestion = '' THEN szSuggestion = 'suggestion' 
+IF IsNull(szCantMakeGrantsLanguage) OR szCantMakeGrantsLanguage = '' THEN szCantMakeGrantsLanguage = 'You are not set up to make grant suggestions to any funds at this time.  Please contact the foundation if you feel this is in error.'
+IF IsNull(szDefaultIAgree) THEN szDefaultIAgree = 'N'
+IF IsNull(szShowIAgreeOnly) THEN szShowIAgreeOnly = 'N'
+
+//redacted
+
+//Beginning below are the critical elements which parse the variable and dump it into tables
+
+IF p_szEditSuggestionID <> '' AND NOT IsNull(p_szEditSuggestionID) THEN 
+	SELECT gt_cart_det.gt_variable_value 
+	  INTO :p_szOrgID
+	  FROM gt_cart_det
+	 WHERE gt_cart_det.gt_line_number = 1
+	   AND gt_cart_det.gt_suggestion_id = :p_szEditSuggestionID USING itr;
+	IF p_szOrgID = '' OR p_szOrgID = '0' THEN p_szOrgName = 'MANUAL'
+END IF
+IF p_szEditSuggestionID <> '' AND NOT IsNull(p_szEditSuggestionID) AND &
+		(LEFT(p_szError,POS(p_szError,'|') - 1) = '' OR IsNull(p_szError)) THEN
+	lSuggestionID = Long(p_szEditSuggestionID)
+	ds2 = CREATE DATASTORE
+	ds2.dataobject = 'd_gt_suggestion_info'
+	ds2.SetTrans(itr)
+	ds2.Retrieve(lSuggestionID) 
+	FOR lIndex = 1 to ds2.RowCount()
+		lVariableIndex[lIndex] = ds2.GetItemNumber(lIndex,"gt_line_number") 
+		szVariableValue[lIndex] = ds2.GetItemString(lIndex,"gt_variable_value") 
+		szVariableIndexed[lVariableIndex[lIndex]] = szVariableValue[lIndex]
+	NEXT
+	lCounter = ds2.RowCount()
+	DESTROY ds2
+
+ELSEIF p_szError <> '' AND NOT IsNull(p_szError) THEN // Error in the form 
+	szErrorMessage = LEFT(p_szError,POS(p_szError,'|') - 1)
+		
+	szFormCopy = RIGHT(p_szError,LEN(p_szError) - POS(p_szError,'|'))
+	IF POS(szFormCopy,'|') > 0 THEN 
+		szDelimiter = '|'
+	ELSE
+		szDelimiter = '&'
+	END IF 
+	
+//redacted
+	
+	// Parse out variables
+	lCounter = 0
+	IF RIGHT(szFormCopy,1) <> '|' THEN szFormCopy += '|' 
+	DO WHILE POS(szFormCopy,szDelimiter) > 0
+		szVariable = LEFT(szFormCopy,POS(szFormCopy,szDelimiter) - 1)
+		szFormCopy = RIGHT(szFormCopy,LEN(szFormCopy) - POS(szFormCopy,szDelimiter))
+		IF LEFT(szVariable,3) = 'VAR' THEN
+			lCounter ++ 
+			szGotVariable[lCounter] = szVariable 
+			lVariableIndex[lCounter] = long(MID(szVariable,4,  POS(szVariable,"=") - 4 ))
+			szVariableValue[lCounter] = RIGHT(szVariable,LEN(szVariable) - POS(szVariable,"="))
+			lPosIndex = 1 
+			// Get Rid of Possible Tags 
+			DO WHILE POS(szVariableValue[lCounter],'<',lPosIndex) > 0
+				IF POS(szVariableValue[lCounter],'>',lPosIndex + 1) > 0 THEN
+					szVariableValue[lCounter] = LEFT(szVariableValue[lCounter],&
+																	POS(szVariableValue[lCounter],'<',lPosIndex) - 1) + &
+														 RIGHT(szVariableValue[lCounter],LEN(szVariableValue[lCounter]) - &
+														 			POS(szVariableValue[lCounter],'>',lPosIndex + 1))
+				ELSE
+					EXIT
+				END IF
+			LOOP 
+			// End Removal of Tags
+			szHiddenValue[lCounter] = szVariableValue[lCounter]
+			DO WHILE POS(szHiddenValue[lCounter],'"') > 0
+				szHiddenValue[lCounter] = LEFT(szHiddenValue[lCounter],POS(szHiddenValue[lCounter],'"') - 1) + '&quot;' + &
+									RIGHT(szHiddenValue[lCounter],LEN(szHiddenValue[lCounter]) - POS(szHiddenValue[lCounter],'"'))
+			LOOP
+			szVariableIndexed[lVariableIndex[lCounter]] = szVariableValue[lcounter]
+			szHiddenValueIndexed[lVariableIndex[lCounter]] = szHiddenValue[lCounter]
+			IF lVariableIndex[lCounter] = 1 THEN p_szOrgID = szVariableValue[lCounter] // Set Org ID
+			szVariableList = szVariableList + szGotVariable[lCounter] + ':' + String(lVariableIndex[lCounter]) + &
+							':' + szVariableValue[lCounter] + '<br>'
+		END IF
+	LOOP
+END IF 
+IF IsNull(p_szProjectID) OR p_szProjectID = '' THEN // For confirm, edit screens
+	IF Upperbound(szVariableIndexed) >= 99 THEN
+		IF szVariableIndexed[99] <> '' AND NOT IsNull(szVariableIndexed[99]) THEN
+			p_szProjectID = szVariableIndexed[99]
+		END IF
+	END IF
+	If IsNull(p_szProjectID) THEN p_szProjectID = '' 
+END IF 
+
+IF (szVariableIndexed[13] = '' OR IsNull(szVariableIndexed[13])) THEN // Fund Anonymous has no value yet. Default?
+	SELECT COUNT(*) INTO :lCount FROM "fd_advisor_fund" WHERE "fd_advisor_userid" = :p_szAdvisorID USING itr; 
+	IF lCount = 1 THEN 
+		SELECT fd_master.fd_anonymous_yn
+		  INTO :szAnonymousYN
+		  FROM fd_master, fd_advisor_fund
+		  WHERE fd_master.fd_id = fd_advisor_fund.fd_id
+		  ANd fd_master.fd_entity = fd_advisor_fund.fd_entity
+		  AND fd_advisor_fund.fd_advisor_userid = :p_szAdvisorID USING itr; 
+		 IF Upper(szAnonymousYN) = 'N' OR IsNull(szAnonymousYN) OR Trim(szAnonymousYN) = '' THEN 
+			szVariableIndexed[13] = 'NO'
+		ELSE
+			szVariableIndexed[13] = 'YES'
+		END IF 
+	END IF 
+END IF 
+
+
+IF (szVariableIndexed[14] = '' OR IsNull(szVariableIndexed[14])) THEN // Donor Anonymous has no value yet. Default?
+	SELECT COUNT(*) INTO :lCount FROM "fd_advisor_fund" WHERE "fd_advisor_userid" = :p_szAdvisorID USING itr; 
+	IF lCount = 1 THEN 
+		SELECT fd_master.fd_donor_anon_yn
+		  INTO :szDonorAnonymousYN
+		  FROM fd_master, fd_advisor_fund
+		  WHERE fd_master.fd_id = fd_advisor_fund.fd_id
+		  ANd fd_master.fd_entity = fd_advisor_fund.fd_entity
+		  AND fd_advisor_fund.fd_advisor_userid = :p_szAdvisorID USING itr; 
+		 IF Upper(szDonorAnonymousYN) = 'N' OR IsNull(szDonorAnonymousYN) OR Trim(szDonorAnonymousYN) = '' THEN 
+			szVariableIndexed[14] = 'NO'
+		ELSE
+			szVariableIndexed[14] = 'YES'
+		END IF 
+	END IF 
+END IF 
+
+
+IF (szVariableIndexed[21] = '' OR IsNull(szVariableIndexed[21])) AND &
+	((p_szOrgID = 'MANUAL' AND p_szOrgName = 'MANUAL') OR p_szEntity = '0176') THEN // Email Field Blank - Fill in with default.
+
+	// Parse out any multiple e-mails
+	DO WHILE POS(szAdvisorEmail,';') > 0 
+		szAdvisorEmail = TRIM(LEFT(szAdvisorEmail, POS(szAdvisorEmail,';') - 1))
+	LOOP
+	DO WHILE POS(szAdvisorEmail,',') > 0 
+		szAdvisorEmail = TRIM(LEFT(szAdvisorEmail, POS(szAdvisorEmail,',') - 1))
+	LOOP
+	szVariableIndexed[21] = szAdvisorEmail
+END IF 
+
+IF (szVariableIndexed[4] = '' OR IsNull(szVariableIndexed[4])) AND p_szRecentGrant <> '' AND NOT IsNull(p_szRecentGrant) THEN 
+	szGtID = LEFT(p_szRecentGrant,POS(p_szRecentGrant,'|') - 1)
+	szLineNumber = RIGHT(p_szRecentGrant,LEN(p_szRecentGrant) - POS(p_szRecentGrant,'|'))
+	SELECT gt_pay_amt, gt_purpose, gt_grantee_name 
+	  INTO :dAmount, :szPurpose, :szGranteeName 
+	  FROM gt_payments
+	 WHERE gt_payments.gt_id = :szGtId
+	   AND gt_payments.gt_payline = :szLineNumber
+		ANd gt_payments.fd_entity = :p_szEntity USING itr; 
+	IF dAmount > 0 AND NOT IsNull(dAmount) THEN 
+		IF p_szEntity <> '1435' AND p_szEntity <> '1255' AND p_szEntity <> '0071' THEN
+			szVariableIndexed[4] = String(dAmount,'$#,###')
+		ELSE
+			szVariableIndexed[4] = ''
+		END IF
+	END IF
+	IF szPurpose <> '' AND NOT IsNull(szPurpose) THEN
+		IF p_szEntity <> '1435' THEN
+			szVariableIndexed[15] = szPurpose
+		ELSE
+			szVariableIndexed[15] = ''
+		END IF
+	END IF 
+END IF
+	 						 
+IF (szVariableIndexed[24] = '' OR IsNull(szVariableIndexed[24])) THEN // Advisor name field Blank - Fill in with default. AND &
+	szVariableIndexed[24] = szAdvisorName
+END IF 
+
+//redacted
+	
+IF p_szOrgID = '0' OR TRIM(p_szOrgID) = '' OR IsNull(p_szOrgId) OR p_szOrgID = 'MANUAL' THEN
+	IF p_szOrgID <> 'MANUAL' OR IsNull(p_szOrgID) THEN p_szOrgID = '0'
+	szNewForm = 'Y'
+ELSE
+	szNewForm = 'N'
+END IF
+
+//redacted
+
+ds = CREATE datastore
+ds.dataobject = 'd_gt_grant_form_lines'
+ds.SetTrans(itr)
+lRowCount = ds.Retrieve(p_szEntity, szNewForm, p_dFieldCoefficient)  
+
+IF szApprovalYN = 'Y' THEN 
+	FOR lIndex = 1 to ds.RowCount() 
+		ds.object.gt_required_yn[lIndex] = ds.object.gt_approval_required_yn[lIndex]
+	NEXT
+END IF 
+
+// Make sure we have the org name
+IF TRIM(p_szOrgName) = '' OR IsNull(p_szOrgName) THEN
+	SELECT ct_org_name
+	  INTO :p_szOrgName
+	  FROM ct_org_master
+	 WHERE fd_entity = :p_szEntity
+	 AND ct_id = :p_szOrgID USING itr;
+ELSE
+	DO WHILE POS(p_szOrgName,'+') > 0
+		p_szOrgName = LEFT(p_szOrgName,POS(p_szOrgName,'+') - 1) + ' ' + RIGHT(p_szOrgName,LEN(p_szOrgName) - POS(p_szOrgName,'+'))
+	LOOP
+END IF
+
+// Default Contact Person and Phone if available
+IF p_szOrgID <> '' AND NOT IsNull(p_szOrgId) THEN 
+	SELECT ct_contact_person, ct_contact_phone, ct_org_addr1, ct_org_addr2,ct_org_addr3, ct_org_city, 
+			 ct_org_state, ct_org_zip, ct_org_title, ct_ein, ct_country, ct_contact_email
+	  INTO :szContactPerson, :szContactPhone, :szAddr1, :szAddr2, :szAddr3, :szCity, :szState, :szZip , :szTitle, :szEIN, :szCountry, :szContactEmail
+	  FROM ct_org_master
+	 WHERE fd_entity = :p_szEntity
+	 AND ct_id = :p_szOrgID USING itr;
+	 //check for grant address data
+	 SELECT COUNT(ct_id)
+	 	INTO :lOrgCt
+	 	FROM ct_org_address
+	  WHERE fd_entity = :p_szEntity
+	    AND ct_id = :p_szOrgID
+		 AND gt_id = :szGtId USING itr;
+	IF lOrgCt > 0 THEN
+	 SELECT ct_org_contact_name, ct_contact_phone, ct_org_addr1, ct_org_addr2,ct_org_addr3, ct_org_city, ct_org_state, ct_org_zip, ct_contact_email 
+	   INTO :szContactPerson, :szContactPhone, :szAddr1, :szAddr2, :szAddr3, :szCity, :szState, :szZip, :szContactEmail
+	   FROM ct_org_address
+	  WHERE fd_entity = :p_szEntity
+	    AND gt_id = :szGtId
+	    AND ct_id = :p_szOrgID USING itr;
+	END IF
+
+	IF (szVariableIndexed[10] = '' OR IsNull(szVariableIndexed[10])) AND &
+		szContactPerson <> '' AND NOT IsNull(szContactPerson) THEN szVariableIndexed[10] = szContactPerson
+	IF (szVariableIndexed[12] = '' OR IsNull(szVariableIndexed[12])) AND &
+		szContactPhone <> '' AND NOT IsNull(szContactPhone)  THEN szVariableIndexed[12] = szContactPhone  
+	IF p_szEntity = '1435' THEN
+		IF (szVariableIndexed[28] = '' OR IsNull(szVariableIndexed[28])) AND &
+			szContactEmail <> '' AND NOT IsNull(szContactEmail)  THEN szVariableIndexed[28] = szContactEmail
+	END IF
+	IF (szVariableIndexed[5] = '' OR IsNull(szVariableIndexed[5])) AND &
+		szAddr1 <> '' AND NOT IsNull(szAddr1) THEN szVariableIndexed[5] = szAddr1
+	IF (szVariableIndexed[6] = '' OR IsNull(szVariableIndexed[6])) AND &
+		szAddr2 <> '' AND NOT IsNull(szAddr2) THEN szVariableIndexed[6] = szAddr2
+	IF (szVariableIndexed[105] = '' OR IsNull(szVariableIndexed[105])) AND &
+		szAddr3 <> '' AND NOT IsNull(szAddr3) THEN szVariableIndexed[105] = szAddr3
+	IF (szVariableIndexed[7] = '' OR IsNull(szVariableIndexed[7])) AND &
+		szCity <> '' AND NOT IsNull(szCity) THEN szVariableIndexed[7] = szCity
+	IF (szVariableIndexed[8] = '' OR IsNull(szVariableIndexed[8])) AND &
+		szState <> '' AND NOT IsNull(szState) THEN szVariableIndexed[8] = szState
+	IF (szVariableIndexed[54] = '' OR IsNull(szVariableIndexed[54])) AND &
+		szState <> '' AND NOT IsNull(szState) THEN szVariableIndexed[54] = szState
+	IF (szVariableIndexed[9] = '' OR IsNull(szVariableIndexed[9])) AND &
+		szZip <> '' AND NOT IsNull(szZip) THEN szVariableIndexed[9] = szZip
+	IF (szVariableIndexed[11] = '' OR IsNull(szVariableIndexed[11])) AND &
+		szTitle <> '' AND NOT IsNull(SzTitle) THEN szVariableIndexed[11] = szTitle 
+	IF (szVariableIndexed[62] = '' OR IsNull(szVariableIndexed[62])) AND szCountry <> '' AND NOT IsNull(szCountry) AND p_szEntity = '1435' THEN
+		szVariableIndexed[62] = szCountry
+		IF szCountry = 'UNITED STATES OF AMERICA' THEN
+			szVariableIndexed[23] = 'Check'
+		ELSE
+			szVariableIndexed[23] = 'Wire - International'
+		END IF
+	END IF
+END IF
+// Get the Project name if applicable
+IF p_szProjectID <> '' THEN
+	IF Left(p_szProjectID,5) = 'GTADV' THEN
+		IF Len(p_szProjectID) > 5 THEN 
+			szGrantID = Right(p_szProjectID, Len(p_szProjectID) - 5)
+			SELECT IsNull(gt_project_desc,'Grant Advice'), gt_id INTO :szDefaultPurpose, :szAdvGtID
+			  FROM gt_advice
+			WHERE gt_id = :szGrantID USING itr;
+		ELSE
+			SELECT IsNull(gt_project_desc,'Grant Advice'), gt_id INTO :szDefaultPurpose, :szAdvGtID
+			  FROM gt_advice
+			WHERE ct_id = :p_szOrgID USING itr;
+		END IF
+		szVariableIndexed[15] = szDefaultPurpose
+		szVariableIndexed[99] = 'Grant Advice ' //+ p_szOrgName
+		szVariableIndexed[106] = szAdvGtID
+	ELSE
+		SELECT ax_synergy_title, ax_synergy_default_purpose 
+		  INTO :szProjectName, :szDefaultPurpose 
+		  FROM ax_synergy
+		 WHERE fd_entity = :p_szEntity
+		 AND ax_synergy_code = :p_szProjectID USING itr;
+		IF itr.sqlcode < 0 THEN RETURN itr.sqlerrtext 
+		IF szVariableIndexed[15] = '' OR IsNull(szVariableIndexed[15]) THEN
+			szVariableIndexed[15] = szDefaultPurpose
+		END IF 
+	END IF
+END IF
+
+IF NOT IsNull(p_szeditsuggestionid) AND p_szeditsuggestionid <> '' THEN
+	SELECT gt_variable_value
+	  INTO :szAdvGtID
+	  FROM gt_cart_det 
+	 WHERE gt_suggestion_id = :p_szeditsuggestionid 
+	   AND gt_line_number = 106 USING itr;
+	 szVariableIndexed[106] = szAdvGtID
+END IF
+
+IF (szVariableIndexed[27] = '' OR IsNull(szVariableIndexed[27])) THEN
+	IF p_szEntity = '2333' THEN 
+		szVariableIndexed[27] = String(Date(today()),'mm/dd/yyyy')
+	END IF
+END IF
+
+IF (szVariableIndexed[29] = '' OR IsNull(szVariableIndexed[29])) THEN
+		szVariableIndexed[29] = szEIN
+END IF
+
+// get count of recurring grant fields
+SELECT count(*)
+  INTO :lRecurFields
+  FROM gt_form_lines_setup
+ WHERE fd_entity = :p_szEntity
+   AND gt_new_grantee_yn = :szNewForm
+	AND gt_show_yn = 'Y'
+	AND gt_line_number IN (85,86,87) USING itr;
+
+//determine if grant form has payment date field (27)
+SELECT count(*) INTO :lDateFields
+FROM gt_form_lines_setup
+WHERE fd_entity = :p_szEntity
+AND gt_show_yn = 'Y'
+AND gt_new_grantee_yn = :szNewForm
+AND gt_line_number IN (27) USING itr;
+
+//redacted
+
+FOR lIndex = 1 to ds.RowCount() // Add Form Lines based on Entity 
+	lLineNumber = ds.GetItemNumber(lIndex,"gt_line_number")
+	IF szDAFYN = 'Y' AND lLineNumber <> 4 AND lLineNumber <> 3 AND lLineNumber <> 24 AND lLineNumber <> 2 AND lLineNumber <> 7 AND lLineNumber <> 8 AND lLineNumber <> 13 AND lLineNumber <> 16 AND lLineNumber <> 17 AND lLineNumber <> 23 THEN CONTINUE
+	IF lLineNumber = 21 THEN 
+		IF p_szOrgID <> 'MANUAL' OR IsNull(p_szOrgID) OR p_szOrgName <> 'MANUAL' OR IsNull(p_szOrgName) THEN
+			IF p_szEntity <> '0176' THEN
+				CONTINUE // Skip E-mail for Suggestion Central
+			END IF 
+		END IF
+	END IF
+	szDescription = ds.GetItemString(lIndex,"gt_description") 
+	szConditions = ds.GetItemString(lIndex,"gt_conditions") 
+	szHelp = ds.GetItemString(lIndex,"gt_help")
+	IF IsNull(szConditions) THEN szconditions = '' 
+	szVariableName = 'VAR' + String(lLineNumber) // Not Using "FORM VARIABLE" field anymore.
+	IF bConfirmOnly AND szVariableIndexed[lLineNumber] = "" THEN
+		szVariableDisplay = '&nbsp;'
+	ELSE
+			szVariableDisplay = szVariableIndexed[lLineNumber]
+	END IF
+	
+	//redacted
+
+NEXT
+
+//redacted
+
+DESTROY ds
+RETURN szHtml
